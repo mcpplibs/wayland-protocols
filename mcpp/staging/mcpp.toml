@@ -1,0 +1,107 @@
+# freedesktop.wayland-protocols-staging — the staging extension protocols.
+#
+# WHAT UPSTREAM SHIPS, AND WHY A FORK
+#
+# wayland-protocols is XML and nothing else: 65 files under stable/, staging/,
+# unstable/ and experimental/, plus a pkg-config file naming the directory. A
+# consumer runs wayland-scanner over the ones it uses and compiles the result
+# itself; there is no library to link and no header to include until someone
+# generates them. A plain inline descriptor has nothing to compile, so the
+# generator runs once here and the output is checked in — the same shape as
+# freedesktop.wayland's own protocol code.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# WHY ONE PACKAGE PER TIER, AND NOT ONE FOR ALL 65
+#
+# Because all 65 in one library DOES NOT LINK, and that is measured rather than
+# feared: the scanner emits the same symbol names for a protocol's stable and
+# unstable spellings.
+#
+#     multiple definition of `zwp_linux_dmabuf_v1_interface'
+#
+# Counted, per exported `wl_interface`:
+#
+#     stable  n staging  =  0        stable   21 exports
+#     stable  n unstable = 13        staging  76
+#     staging n unstable =  0        unstable 69
+#
+# So the tier is the boundary along which they coexist, and it is upstream's
+# own directory structure rather than a split invented here.
+#
+# THE COST WAS MEASURED BEFORE SHIPPING A WHOLE TIER. mcpp links a dependency's
+# objects into the consumer. All 65 protocols compile to 270 KB of
+# `wl_interface` tables — 4 KB each — and the bulk of the tree is HEADERS,
+# which cost nothing until included. Splitting per protocol would mean 65
+# packages for 270 KB.
+[package]
+namespace   = "freedesktop"
+name        = "wayland-protocols-staging"
+version     = "1.49"
+standard    = "c++23"
+description = "wayland-protocols staging — the tier upstream expects to stabilise unchanged"
+license     = "MIT"
+repo        = "https://gitlab.freedesktop.org/wayland/wayland-protocols"
+
+[build]
+# Written out rather than globbed: a glob would silently absorb whatever a
+# regeneration left behind, and this list is what CI diffs against the
+# scanner's output.
+sources = [
+    "../generated/alpha-modifier-v1-protocol.c",
+    "../generated/color-management-v1-protocol.c",
+    "../generated/color-representation-v1-protocol.c",
+    "../generated/commit-timing-v1-protocol.c",
+    "../generated/content-type-v1-protocol.c",
+    "../generated/cursor-shape-v1-protocol.c",
+    "../generated/drm-lease-v1-protocol.c",
+    "../generated/ext-background-effect-v1-protocol.c",
+    "../generated/ext-data-control-v1-protocol.c",
+    "../generated/ext-foreign-toplevel-list-v1-protocol.c",
+    "../generated/ext-idle-notify-v1-protocol.c",
+    "../generated/ext-image-capture-source-v1-protocol.c",
+    "../generated/ext-image-copy-capture-v1-protocol.c",
+    "../generated/ext-session-lock-v1-protocol.c",
+    "../generated/ext-transient-seat-v1-protocol.c",
+    "../generated/ext-workspace-v1-protocol.c",
+    "../generated/fifo-v1-protocol.c",
+    "../generated/fractional-scale-v1-protocol.c",
+    "../generated/linux-drm-syncobj-v1-protocol.c",
+    "../generated/pointer-warp-v1-protocol.c",
+    "../generated/security-context-v1-protocol.c",
+    "../generated/single-pixel-buffer-v1-protocol.c",
+    "../generated/tearing-control-v1-protocol.c",
+    "../generated/xdg-activation-v1-protocol.c",
+    "../generated/xdg-dialog-v1-protocol.c",
+    "../generated/xdg-session-management-v1-protocol.c",
+    "../generated/xdg-system-bell-v1-protocol.c",
+    "../generated/xdg-toplevel-drag-v1-protocol.c",
+    "../generated/xdg-toplevel-icon-v1-protocol.c",
+    "../generated/xdg-toplevel-tag-v1-protocol.c",
+    "../generated/xwayland-shell-v1-protocol.c",
+]
+
+# The generated headers ARE the public interface — a consumer writes
+# `#include <xdg-shell-client-protocol.h>` — so the directory is exposed
+# rather than kept build-private. freedesktop.wayland had exactly this bug
+# once, masked locally by a header the SubOS happened to carry.
+include_dirs = ["../generated"]
+
+cflags = ["-D_GNU_SOURCE", "-fPIC"]
+
+# kind = "lib", not "shared", and that matches upstream: there is no
+# libwayland-protocols.so anywhere, because the marshalling tables are meant to
+# be compiled INTO the program that uses them. A shared library here would
+# invent an ABI upstream does not have.
+[targets.wayland_protocols_staging]
+kind = "lib"
+
+[dependencies]
+# Every `*-client-protocol.h` includes <wayland-client-core.h>; the server
+# headers the server equivalent.
+freedesktop.wayland        = "1.26.0"
+freedesktop.wayland-server = "1.26.0"
+
+# staging and unstable are not self-contained: measured, they reference
+# `xdg_toplevel_interface` (and staging `zwp_tablet_tool_v2_interface`),
+# which stable defines. The edge is real, not conventional.
+freedesktop.wayland-protocols-stable = { path = "../stable" }

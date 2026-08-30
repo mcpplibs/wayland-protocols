@@ -1,0 +1,140 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [default, llvm]
+    name: build (${{ matrix.toolchain }})
+    steps:
+      - uses: actions/checkout@v4
+
+      # XLINGS_NON_INTERACTIVE: without it the installer runs
+      # `xlings self install < /dev/tty`, and a runner's /dev/tty is readable
+      # but not connected. XLINGS_VERSION pins the installer so a red run can
+      # be told apart from an ecosystem change; mcpp itself stays unpinned
+      # because these packages depend on the ecosystem.
+      - name: Install xlings + mcpp
+        env:
+          XLINGS_NON_INTERACTIVE: "1"
+          XLINGS_VERSION: "2026.8.27.5"
+        run: |
+          curl -fsSL https://d2learn.org/xlings-install.sh | bash
+          echo "$HOME/.xlings/bin" >> "$GITHUB_PATH"
+          "$HOME/.xlings/bin/xlings" install mcpp
+          echo "$HOME/.xlings/subos/default/bin" >> "$GITHUB_PATH"
+
+      - name: Select toolchain
+        if: matrix.toolchain != 'default'
+        run: |
+          mcpp toolchain install ${{ matrix.toolchain }}
+          mcpp toolchain default ${{ matrix.toolchain }}
+
+      - name: Build the workspace
+        run: |
+          mcpp --version
+          mcpp build --workspace
+
+      - name: every tier's test
+        run: |
+          for t in stable staging unstable; do
+            echo "── mcpp/$t ──"
+            mcpp test -p "mcpp/$t"
+          done
+
+      # THE INVARIANT THIS PACKAGE EXISTS AROUND. staging/ and unstable/ carry
+      # the same protocols under the same symbol names, so the tiers are three
+      # packages rather than one. If a regeneration or an edit ever put a
+      # protocol in two tiers, the collision would show up as a link error in
+      # somebody's project rather than here — unless this runs.
+      - name: no exported interface appears in two tiers
+        run: |
+          syms_of() {
+            for x in $(find "upstream/$1" -name '*.xml' | sort); do
+              b=$(basename "$x" .xml)
+              # only the protocols this tier's manifest actually ships
+              grep -q "\"../generated/$b-protocol.c\"" "mcpp/$1/mcpp.toml" || continue
+              grep -oP 'WL_EXPORT const struct wl_interface \K\w+' \
+                   "mcpp/generated/$b-protocol.c" 2>/dev/null
+            done | sort -u
+          }
+          syms_of stable   > /tmp/st.txt
+          syms_of staging  > /tmp/sg.txt
+          syms_of unstable > /tmp/un.txt
+          wc -l /tmp/st.txt /tmp/sg.txt /tmp/un.txt
+          fail=0
+          for pair in "st:sg:stable/staging" "st:un:stable/unstable" "sg:un:staging/unstable"; do
+            a=${pair%%:*}; rest=${pair#*:}; b=${rest%%:*}; name=${rest#*:}
+            n=$(comm -12 "/tmp/$a.txt" "/tmp/$b.txt" | wc -l)
+            if [ "$n" -ne 0 ]; then
+              echo "::error::$name share $n exported interface(s):"
+              comm -12 "/tmp/$a.txt" "/tmp/$b.txt" | sed 's/^/    /'
+              fail=1
+            else
+              echo "$name: disjoint"
+            fi
+          done
+          exit $fail
+
+  generated:
+    name: mcpp/generated/ matches the scanner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install xlings + mcpp
+        env:
+          XLINGS_NON_INTERACTIVE: "1"
+          XLINGS_VERSION: "2026.8.27.5"
+        run: |
+          curl -fsSL https://d2learn.org/xlings-install.sh | bash
+          echo "$HOME/.xlings/bin" >> "$GITHUB_PATH"
+          "$HOME/.xlings/bin/xlings" install mcpp
+          echo "$HOME/.xlings/subos/default/bin" >> "$GITHUB_PATH"
+      # The generated code is checked in so no scanner runs in a consumer's
+      # build. Checked in means it can drift; this is what stops it. The
+      # scanner is the ECOSYSTEM's — freedesktop.wayland-scanner, built from
+      # the same wayland release as the client and server libraries — so the
+      # generated code cannot drift from the library that consumes it.
+      - name: regenerate with the ecosystem's wayland-scanner and diff
+        run: |
+          mkdir -p /tmp/sc && cd /tmp/sc
+          printf '[package]\nname = "sc"\nversion = "0.1.0"\nstandard = "c++23"\n\n[target.'"'"'cfg(linux)'"'"'.dependencies.freedesktop]\nwayland-scanner = "1.26.0"\n' > mcpp.toml
+          mkdir -p src && printf 'int main(){return 0;}\n' > src/main.cpp
+          mcpp build 2>&1 | tail -3
+          SC=$(find . ~/.mcpp -name wayland-scanner -type f -perm -u+x 2>/dev/null | head -1)
+          [ -n "$SC" ] || { echo "::error::no wayland-scanner from freedesktop.wayland-scanner"; exit 1; }
+          cd "$GITHUB_WORKSPACE"
+          mcpp/tools/genproto.sh "$SC" 2>/dev/null | tail -1
+          if ! git diff --quiet; then
+            echo "::error::mcpp/generated/ is out of date — run mcpp/tools/genproto.sh"
+            git diff --stat | tail -10
+            exit 1
+          fi
+          echo "generated protocol code matches the XML and this scanner"
+
+  upstream:
+    name: upstream/ is the release tarball, unmodified
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: diff upstream/ against wayland-protocols 1.49
+        run: |
+          curl -L -fsS -o wp.tar.gz \
+            "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/archive/1.49/wayland-protocols-1.49.tar.gz"
+          echo "8d94eee148db4d8111ccc0d4331de2f82d4b28c38e30eace9f052886480f7d86  wp.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/pristine && tar -xzf wp.tar.gz -C /tmp/pristine
+          if diff -r /tmp/pristine/wayland-protocols-1.49 upstream; then
+            echo "upstream/ is pristine"
+          else
+            echo "::error::upstream/ differs from the release tarball. Everything this fork adds belongs under mcpp/."
+            exit 1
+          fi

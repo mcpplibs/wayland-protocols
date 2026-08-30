@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "mcpp/stable",
+    "mcpp/staging",
+    "mcpp/unstable",
+]
