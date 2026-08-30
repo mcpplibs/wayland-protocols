@@ -29,7 +29,16 @@ OUT="$ROOT/mcpp/generated"
 [ -x "$SCANNER" ] || { echo "not executable: $SCANNER" >&2; exit 1; }
 "$SCANNER" --version 2>&1 | head -1
 
-mkdir -p "$OUT"
+# `wayland-protocols/` mirrors the sub-directory upstream's own meson installs
+# these into (include/wayland-protocols/meson.build), because that is the
+# spelling consumers write: wlroots' public headers say
+#
+#     #include <wayland-protocols/xdg-shell-enum.h>
+#
+# and a consumer of wlroots that writes a plain `#include <wlr/...>` — the
+# ordinary upstream usage an adaptation layer must not change — reaches them
+# through this package's `include_dirs`, so the path has to match upstream's.
+mkdir -p "$OUT" "$OUT/wayland-protocols"
 n=0
 # LC_ALL=C so the traversal order is the same everywhere. It does not affect
 # file CONTENT here, but it keeps the log comparable run to run — and the GL
@@ -41,6 +50,12 @@ for xml in $(find "$ROOT/upstream" -name '*.xml' | sort); do
     "$SCANNER" -s public-code   "$xml" "$OUT/$base-protocol.c"
     "$SCANNER" -s client-header "$xml" "$OUT/$base-client-protocol.h"
     "$SCANNER" -s server-header "$xml" "$OUT/$base-server-protocol.h"
+    # The enum header carries ONLY the protocol's enums, with no interface
+    # symbols and no dependency on libwayland. That is why upstream installs it
+    # separately: a header that merely wants to name `enum xdg_toplevel_state`
+    # can have it without pulling in a marshalling table it would then have to
+    # link. wlroots 0.20 uses exactly that, in ten of its public headers.
+    "$SCANNER" -s enum-header   "$xml" "$OUT/wayland-protocols/$base-enum.h"
     n=$((n + 1))
 done
 echo "regenerated $n protocol(s) -> mcpp/generated/"
