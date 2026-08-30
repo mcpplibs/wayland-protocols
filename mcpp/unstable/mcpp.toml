@@ -41,10 +41,29 @@
 # `wl_interface` tables — 4 KB each — and the bulk of the tree is HEADERS,
 # which cost nothing until included. Splitting per protocol would mean 65
 # packages for 270 KB.
+# ⚠️ VERSION 1.49.1 — the third component is THIS FORK's revision, not
+# upstream's. wayland-protocols releases two-component versions and 1.49 is the
+# newest one; 1.49.1 is 1.49's XML plus the `wayland-protocols/<name>-enum.h`
+# headers that upstream's own meson installs and this fork did not previously
+# generate. wlroots 0.20 needs them in ten of its PUBLIC headers, so they have
+# to be reachable by a consumer writing a plain `#include <wlr/...>`.
+#
+# ⭐ Why the enum headers must be CHECKED IN rather than produced by a
+# `build.mcpp` the way §14 of the design doc otherwise prescribes: measured
+# 2026-08-31, `mcpp::include_dir()` from a build program is PACKAGE-PRIVATE —
+# a consumer does not see it — while `[build] include_dirs` in the manifest
+# does propagate. A package whose product IS headers therefore cannot generate
+# them at build time.
+#
+# Why a new version rather than re-cutting 1.49: the mcpp store is keyed by
+# (name, version) and does not re-extract a version it already holds, so a
+# re-cut tag never reaches anyone who already built against it — while the tag
+# archive's sha256 changes under every published descriptor. Additive content,
+# additive version.
 [package]
 namespace   = "freedesktop"
 name        = "wayland-protocols-unstable"
-version     = "1.49"
+version     = "1.49.1"
 standard    = "c++23"
 description = "wayland-protocols unstable — the zwp_*/zxdg_* protocols still in flux"
 license     = "MIT"
