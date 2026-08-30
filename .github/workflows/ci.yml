@@ -106,12 +106,35 @@ jobs:
       # generated code cannot drift from the library that consumes it.
       - name: regenerate with the ecosystem's wayland-scanner and diff
         run: |
-          mkdir -p /tmp/sc && cd /tmp/sc
-          printf '[package]\nname = "sc"\nversion = "0.1.0"\nstandard = "c++23"\n\n[target.'"'"'cfg(linux)'"'"'.dependencies.freedesktop]\nwayland-scanner = "1.26.0"\n' > mcpp.toml
-          mkdir -p src && printf 'int main(){return 0;}\n' > src/main.cpp
+          mkdir -p /tmp/sc/src && cd /tmp/sc
+          # `tools = [...]`, not a bare version. A plain dependency on a
+          # kind="bin" package does not build the binary; the tools list is
+          # what asks for it, and it lands under the build-cache tool tree.
+          printf '[package]\nname = "sc"\nversion = "0.1.0"\nstandard = "c++23"\n\n[target.'"'"'cfg(linux)'"'"'.dependencies.freedesktop]\nwayland-scanner = { version = "1.26.0", tools = ["wayland-scanner"] }\n' > mcpp.toml
+          printf 'int main(){return 0;}\n' > src/main.cpp
           mcpp build 2>&1 | tail -3
-          SC=$(find . ~/.mcpp -name wayland-scanner -type f -perm -u+x 2>/dev/null | head -1)
-          [ -n "$SC" ] || { echo "::error::no wayland-scanner from freedesktop.wayland-scanner"; exit 1; }
+
+          # SCOPED to the build-cache tool tree on purpose. A bare
+          # `find ~/.mcpp -name wayland-scanner` also matches
+          # `registry/data/xpkgs/xim-x-wayland/1.23.1/bin/wayland-scanner` —
+          # the ECOSYSTEM's scanner, three minor versions older. Regenerating
+          # with that one produces code that differs from what this fork ships
+          # and the diff below would blame the wrong thing.
+          SC=$(find "$HOME/.mcpp/build-cache/v1/tool/freedesktop" \
+                    -name wayland-scanner -type f -perm -u+x 2>/dev/null | head -1)
+          if [ -z "$SC" ]; then
+            echo "::error::freedesktop.wayland-scanner did not produce a binary"
+            find "$HOME/.mcpp/build-cache/v1/tool" -type f -perm -u+x 2>/dev/null | head -10
+            exit 1
+          fi
+          # …and say which one, because "scoped correctly" is exactly the kind
+          # of thing that rots silently. --version goes to STDERR.
+          ver=$("$SC" --version 2>&1 | head -1)
+          echo "scanner: $SC ($ver)"
+          case "$ver" in
+            *1.26.0*) ;;
+            *) echo "::error::wrong scanner version: $ver (expected 1.26.0)"; exit 1 ;;
+          esac
           cd "$GITHUB_WORKSPACE"
           mcpp/tools/genproto.sh "$SC" 2>/dev/null | tail -1
           if ! git diff --quiet; then
